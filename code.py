@@ -40,10 +40,7 @@ def get_distance(current_angle, target):
     - first get the raw difference, mod 360 if negative or > 360
     - then if the value is > 180, the shortest path is the other way
     '''
-    if current_angle > target:
-        difference = (current_angle - target) % 360 
-    else:
-        difference = (target - current_angle) % 360
+    difference = abs(current_angle - target) % 360 
     if difference > 180:
         difference = 360 - difference
     return difference
