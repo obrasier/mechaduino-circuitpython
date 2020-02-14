@@ -118,17 +118,18 @@ def get_direction(curr, target, distance):
     pass through 0. If we do, then the direction is reversed.
     
     return True if clockwise, False if anti-clockwise.'''
+    clockwise = True
     if abs(curr - target) > distance:
         # passes through clock 0
         if curr > target:
-          return True
+            return clockwise
         else:
-          return False
+            return not clockwise
     else:
         if curr > target:
-          return False
+            return not clockwise
         else:
-          return True        
+            return clockwise        
 
 
 def goto(target, step_size=1):
