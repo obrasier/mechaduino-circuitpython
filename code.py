@@ -159,7 +159,7 @@ class Mechaduino:
             :param target: the target angle in degrees
             :param step_size: the step size in degrees
             '''
-            current_angle = guess_angle(read_encoder())
+            current_angle = guess_angle(self.read_encoder())
             distance = get_distance(current_angle, target)
             clockwise = get_direction(current_angle, target, distance)
             num_steps = int(distance/step_size)
@@ -171,9 +171,9 @@ class Mechaduino:
 
 mech = Mechaduino()
 while True:
-    mech.goto(0)
+    mech.goto(5)
     time.sleep(0.01)
-    mech.goto(20)
+    mech.goto(355)
     time.sleep(0.01)
 
 # for i in range(10000):
