@@ -53,10 +53,12 @@ CS_PIN = board.A2
 cs = DigitalInOut(CS_PIN)
 cs.direction = Direction.OUTPUT
 
-def lerp(x, in_min=0, in_max=1024, out_min=0, out_max=5):
-    return (x-in_min) * (out_max-out_min) / (in_max - in_min) + out_min
+def lerp(x, in_min=0, in_max=1023, out_min=0, out_max=5):
+    '''linear interpolation. Same as arduino map.'''
+    return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min
 
 def read_encoder():
+    '''Send SPI signal to read the raw value from the magnetic encoder.'''
     cs.value = False
     buf = bytearray(2)
     spi.try_lock()
@@ -67,6 +69,7 @@ def read_encoder():
     return reading
 
 def guess_angle(encoder):
+    '''interpolate the raw encoder value to an angle'''
     return lerp(encoder, in_max=16383, out_max=360)
 
 def one_step(forwards=True):
@@ -79,9 +82,9 @@ def micro_one_step(theta):
     phase_multiplier = steps_per_rev / 4
     max_duty_cycle = 30000
 
-    angle_1 = (phase_multiplier * theta) % 360
-    sin_a = math.cos(math.pi*angle_1/180)
-    sin_b = math.sin(math.pi*angle_1/180)
+    angle = (phase_multiplier * theta) % 360
+    sin_a = math.cos(math.pi*angle/180)
+    sin_b = math.sin(math.pi*angle/180)
     a_coil = int(sin_a * max_duty_cycle)
     b_coil = int(sin_b * max_duty_cycle)
     vr12.duty_cycle = abs(a_coil)
@@ -100,9 +103,9 @@ def micro_one_step(theta):
         in4.value = False
 
 def get_distance(current_angle, target):
-    '''return the difference between two points on a circle.
+    '''return the distance between two points on a circle.
 
-    - first get the raw difference, mod 360 in case of negative
+    - first get the raw difference, mod 360 if negative or > 360
     - then if the value is > 180, the shortest path is the other way
     '''
     if current_angle > target:
@@ -114,11 +117,10 @@ def get_distance(current_angle, target):
     return difference
 
 def get_direction(curr, target, distance):
-    '''get the direction to rotate the motor 
+    '''get the direction to rotate the motor. Find out if we need
+    pass through 0. If we do, then the direction is reversed.
     
-    - clockwise = True
-    - anti-clockwise = False'''
-    # curr = 5, target = 355, distance = 10
+    return True if clockwise, False if anti-clockwise.'''
     if abs(curr - target) > distance:
         # passes through clock 0
         if curr > target:
@@ -127,21 +129,26 @@ def get_direction(curr, target, distance):
           return False
     else:
         if curr > target:
-          return True
+          return False
         else:
-          return False        
+          return True        
 
 
-def goto(target, step_size):
+def goto(target, step_size=1):
+    '''Moves the motor to a target angle via the shortest path.
+
+    :param target: the target angle in degrees
+    :param step_size: the step size in degrees
+    '''
     current_angle = guess_angle(read_encoder())
     distance = get_distance(current_angle, target)
-    # direction clockwise = True, anti-clockwise = False
     clockwise = get_direction(current_angle, target, distance)
-    for step in range(0, distance, step_size):
+    num_steps = int(distance/step_size)
+    for step in range(num_steps):
         if clockwise:
-            micro_one_step(step)
+            micro_one_step(step/step_size)
         else:
-            micro_one_step(-step)
+            micro_one_step(-step/step_size)
 
 # A is in1/in2
 
@@ -154,27 +161,10 @@ in1.direction = Direction.OUTPUT
 in3 = DigitalInOut(board.D5)
 in3.direction = Direction.OUTPUT
 
-# vr12 = DigitalInOut(board.D9)
-# vr12.direction = Direction.OUTPUT
-# vr34 = DigitalInOut(board.D4)
-# vr34.direction = Direction.OUTPUT
-
-# vr12.value = True
-# vr34.value = True
-
-
 vr12 = PWMOut(board.D9, frequency=200000, duty_cycle=65000)
 vr34 = PWMOut(board.D4, frequency=200000, duty_cycle=65000)
 
 
-# in2.value = False
-
-# for _ in range(1000):
-#     # in1.value, in2.value, in3.value, in4.value = False, False, False, False
-#     one_step()
-#     time.sleep(0.01)
-#     encoder = read_encoder()
-#     print(guess_angle(encoder), encoder)
 for i in range(10000):
     micro_one_step(i/2)
     # one_step()
