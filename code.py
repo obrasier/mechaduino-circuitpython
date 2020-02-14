@@ -102,6 +102,9 @@ class Mechaduino:
         self.led = DigitalInOut(board.D13)
         self.led.direction = Direction.OUTPUT
         self.led.value = True
+
+        # buf for spi data
+        self.buf = bytearray(2)
     
     def _setup_spi(self):
         self.spi.try_lock()
@@ -113,9 +116,8 @@ class Mechaduino:
     def read_encoder(self):
     '''Send SPI signal to read the raw value from the magnetic encoder.'''
         self.cs.value = False
-        buf = bytearray(2)
         self.spi.try_lock()
-        self.spi.write_readinto(b'\xFF\xFF', buf)
+        self.spi.write_readinto(b'\xFF\xFF', self.buf)
         reading = ((buf[0] << 8) | buf[0]) & 0B0011111111111111
         self.cs.value = True
         self.spi.unlock()
