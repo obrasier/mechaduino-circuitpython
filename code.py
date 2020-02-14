@@ -84,7 +84,6 @@ def micro_one_step(theta):
     sin_b = math.sin(math.pi*angle_1/180)
     a_coil = int(sin_a * max_duty_cycle)
     b_coil = int(sin_b * max_duty_cycle)
-    # print(a_coil, b_coil,)
     vr12.duty_cycle = abs(a_coil)
     vr34.duty_cycle = abs(b_coil)
     if a_coil >= 0:
@@ -100,26 +99,49 @@ def micro_one_step(theta):
         in3.value = True
         in4.value = False
 
+def get_distance(current_angle, target):
+    '''return the difference between two points on a circle.
 
-
-def goto(target):
-    current_angle = guess_angle(read_encoder())
-    i = 0
-    if current_angle < target:
-        while current_angle < target:
-            micro_one_step(i)
-            i += 1/16
-            # one_step()
-            # time.sleep(0.01)
-            current_angle = guess_angle(read_encoder())
+    - first get the raw difference, mod 360 in case of negative
+    - then if the value is > 180, the shortest path is the other way
+    '''
+    if current_angle > target:
+        difference = (current_angle - target) % 360 
     else:
-         while current_angle > target:
-            # one_step(forwards=False)
-            # time.sleep(0.01)
-            micro_one_step(i)
-            i -= 1/16
-            current_angle = guess_angle(read_encoder())
+        difference = (target - current_angle) % 360
+    if difference > 180:
+        difference = 360 - difference
+    return difference
 
+def get_direction(curr, target, distance):
+    '''get the direction to rotate the motor 
+    
+    - clockwise = True
+    - anti-clockwise = False'''
+    # curr = 5, target = 355, distance = 10
+    if abs(curr - target) > distance:
+        # passes through clock 0
+        if curr > target:
+          return True
+        else:
+          return False
+    else:
+        if curr > target:
+          return True
+        else:
+          return False        
+
+
+def goto(target, step_size):
+    current_angle = guess_angle(read_encoder())
+    distance = get_distance(current_angle, target)
+    # direction clockwise = True, anti-clockwise = False
+    clockwise = get_direction(current_angle, target, distance)
+    for step in range(0, distance, step_size):
+        if clockwise:
+            micro_one_step(step)
+        else:
+            micro_one_step(-step)
 
 # A is in1/in2
 
