@@ -1,176 +1,150 @@
 import time
 import math
 import board
+
 from digitalio import DigitalInOut, Direction, Pull
 from pulseio import PWMOut
 from busio import SPI
 
-def cycle(p):
-    """Make an iterator returning elements from the iterable and saving a copy
-    of each. When the iterable is exhausted, return elements from the saved
-    copy. Repeats indefinitely.
 
-    :param p: the iterable from which to yield elements
+_MICROSTEPS = const(16)
+_STEPS = const(200)
+_ENCODER_SAMPLES = const(20)
+_PWM_MAX = const(30000)
 
-    """
-    try:
-        len(p)
-    except TypeError:
-        # len() is not defined for this type. Assume it is
-        # a finite iterable so we must cache the elements.
-        cache = []
-        for i in p:
-            yield i
-            cache.append(i)
-        p = cache
-    while p:
-        yield from p
+_MICROSTEPS_PER_REV = const(_MICROSTEPS * _STEPS // 2)
+_MICROSTEPS_PER_CYCLE = const(_MICROSTEPS * 2)
 
-pin_values = ((True, False, False, True),
-              (True, True, False, False),
-              (False, True, True, False),
-              (False, False, True, True))
-pin_values_r = ((True, False, False, True),
-                (False, False, True, True),
-                (False, True, True, False),
-                (True, True, False, False))
-cycle_pin_values = cycle(pin_values)
-cycle_pin_values_r = cycle(pin_values_r)
 
-steps_per_rev = 200
-deg_per_step = 360 / steps_per_rev
+def _pwm_for_microstep(ms):
+    x = math.cos(4 * math.pi * ms / _MICROSTEPS_PER_CYCLE)
+    return int((x + 1) * (_PWM_MAX // 2))
 
+_PWM_TABLE = [_pwm_for_microstep(ms) for ms in range(_MICROSTEPS_PER_CYCLE)]
+
+
+# Use the LED to indicate when the coils are energised.
 led = DigitalInOut(board.D13)
 led.direction = Direction.OUTPUT
 led.value = True
 
-spi = SPI(board.SCK, MOSI=board.MOSI, MISO=board.MISO)
 
+# Bipolar stepper -- the two coils are A0-A1 and B0-B1.
+pin_a0 = DigitalInOut(board.D8)
+pin_a0.direction = Direction.OUTPUT
+pin_a1 = DigitalInOut(board.D7)
+pin_a1.direction = Direction.OUTPUT
+pin_b0 = DigitalInOut(board.D5)
+pin_b0.direction = Direction.OUTPUT
+pin_b1 = DigitalInOut(board.D6)
+pin_b1.direction = Direction.OUTPUT
+
+# The h-bridge takes a PWM input, one for each of A and B.
+pin_pwm_a = PWMOut(board.D9, frequency=200000, duty_cycle=0)
+pin_pwm_b = PWMOut(board.D4, frequency=200000, duty_cycle=0)
+
+# SPI bus connected to the encoder.
+spi = SPI(board.SCK, MOSI=board.MOSI, MISO=board.MISO)
 spi.try_lock()
 spi.configure(baudrate=10000000, polarity=0, phase=1)
 spi.unlock()
-CS_PIN = board.A2
-cs = DigitalInOut(CS_PIN)
-cs.direction = Direction.OUTPUT
+spi_cs = DigitalInOut(board.A2)
+spi_cs.direction = Direction.OUTPUT
 
-def lerp(x, in_min=0, in_max=1023, out_min=0, out_max=5):
-    '''linear interpolation. Same as arduino map.'''
-    return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min
 
 def read_encoder():
-    '''Send SPI signal to read the raw value from the magnetic encoder.'''
-    cs.value = False
-    buf = bytearray(2)
-    spi.try_lock()
-    spi.write_readinto(b'\xFF\xFF', buf)
-    reading = ((buf[0] << 8) | buf[0]) & 0B0011111111111111
-    cs.value = True
-    spi.unlock()
-    return reading
+    """
+    Returns averaged encoder value in the range (0,_MICROSTEPS_PER_REV).
+    """
+    reading = 0
+    for _ in range(_ENCODER_SAMPLES):
+        # Send SPI signal to read the raw value from the magnetic encoder.
+        spi_cs.value = False
+        buf = bytearray(2)
+        spi.try_lock()
+        spi.write_readinto(b'\xFF\xFF', buf)
+        reading += ((buf[0] << 8) | buf[0]) & 0B0011111111111111
+        spi_cs.value = True
+        spi.unlock()
+    reading = reading // _ENCODER_SAMPLES
+    return reading * _MICROSTEPS_PER_REV // 2**14
 
-def guess_angle(encoder):
-    '''interpolate the raw encoder value to an angle'''
-    return lerp(encoder, in_max=16383, out_max=360)
 
-def one_step(forwards=True):
-    if forwards:
-        in1.value, in3.value, in2.value, in4.value = next(cycle_pin_values)
+def get_direction(start, finish):
+    """
+    Get the direction to rotate the motor for the shortest distance.
+    """
+    if finish > start:
+        clockwise = finish - start < _MICROSTEPS_PER_REV // 2
     else:
-        in1.value, in3.value, in2.value, in4.value = next(cycle_pin_values_r)
+        clockwise = start - finish > _MICROSTEPS_PER_REV // 2
+    return 1 if clockwise else -1
 
-def micro_one_step(theta):
-    phase_multiplier = steps_per_rev / 4
-    max_duty_cycle = 30000
 
-    angle = (phase_multiplier * theta) % 360
-    sin_a = math.cos(math.pi*angle/180)
-    sin_b = math.sin(math.pi*angle/180)
-    a_coil = int(sin_a * max_duty_cycle)
-    b_coil = int(sin_b * max_duty_cycle)
-    vr12.duty_cycle = abs(a_coil)
-    vr34.duty_cycle = abs(b_coil)
-    if a_coil >= 0:
-        in1.value = False
-        in2.value = True
-    else:
-        in1.value = True
-        in2.value = False
-    if b_coil >= 0:
-        in3.value = False
-        in4.value = True
-    else:
-        in3.value = True
-        in4.value = False
+def turn_absolute(target, hold=False):
+    """
+    Turn to the specified microstep number.
+    """
+    led.value = True
+    current = read_encoder()
+    target = target % _MICROSTEPS_PER_REV
+    delta = get_direction(current, target)
+    while current != target:
+        current = (current + delta) % _MICROSTEPS_PER_REV
+        index = current % _MICROSTEPS_PER_CYCLE
+        full_index = index // (_MICROSTEPS // 2)
+        a0_output = full_index & 2
+        b0_output = (full_index + 1) & 2
+        pin_a0.value = a0_output
+        pin_a1.value = not a0_output
+        pin_b0.value = not b0_output
+        pin_b1.value = b0_output
+        pwm = _PWM_TABLE[index]
+        pin_pwm_a.duty_cycle = _PWM_MAX - pwm
+        pin_pwm_b.duty_cycle = pwm
 
-def get_distance(current_angle, target):
-    '''return the distance between two points on a circle.
+    if not hold:
+        pin_pwm_a.duty_cycle = 0
+        pin_pwm_b.duty_cycle = 0
+        led.value = False
 
-    - first get the raw difference, mod 360 if negative or > 360
-    - then if the value is > 180, the shortest path is the other way
-    '''
-    difference = abs(current_angle - target) % 360 
-    if difference > 180:
-        difference = 360 - difference
-    return difference
 
-def get_direction(curr, target, distance):
-    '''get the direction to rotate the motor. Find out if we need
-    pass through 0. If we do, then the direction is reversed.
-    
-    return True if clockwise, False if anti-clockwise.'''
-    clockwise = True
-    if abs(curr - target) > distance:
-        # passes through clock 0
-        if curr > target:
-            return clockwise
+def turn_relative(delta, hold=False):
+    current = read_encoder()
+    turn_absolute(current + delta, hold=hold)
+
+
+_MODE_RELATIVE = const(0)
+_MODE_ABSOLUTE = const(1)
+
+def main():
+    mode = _MODE_ABSOLUTE
+    zero = 0
+    last_cmd = 'q'
+    hold = False
+    while True:
+        cmd = input('> ')
+        if not cmd:
+            cmd = last_cmd
+        if cmd == 'r':
+            mode = _MODE_RELATIVE
+        elif cmd == 'a':
+            mode = _MODE_ABSOLUTE
+        elif cmd == 'z':
+            zero = read_encoder()
+        elif cmd == 'q':
+            break
+        elif cmd == 'h':
+            hold = not hold
         else:
-            return not clockwise
-    else:
-        if curr > target:
-            return not clockwise
-        else:
-            return clockwise        
+            angle = float(cmd)
+            steps = int((angle * _MICROSTEPS_PER_REV) / 360)
+            if mode == _MODE_RELATIVE:
+                turn_relative(steps, hold=hold)
+            elif mode == _MODE_ABSOLUTE:
+                turn_absolute(steps + zero, hold=hold)
+        last_cmd = cmd
 
 
-def goto(target, step_size=1):
-    '''Moves the motor to a target angle via the shortest path.
-
-    :param target: the target angle in degrees
-    :param step_size: the step size in degrees
-    '''
-    current_angle = guess_angle(read_encoder())
-    distance = get_distance(current_angle, target)
-    clockwise = get_direction(current_angle, target, distance)
-    num_steps = int(distance/step_size)
-    for step in range(num_steps):
-        if clockwise:
-            micro_one_step(step/step_size)
-        else:
-            micro_one_step(-step/step_size)
-
-# A is in1/in2
-
-in2 = DigitalInOut(board.D7)
-in2.direction = Direction.OUTPUT
-in4 = DigitalInOut(board.D6)
-in4.direction = Direction.OUTPUT
-in1 = DigitalInOut(board.D8)
-in1.direction = Direction.OUTPUT
-in3 = DigitalInOut(board.D5)
-in3.direction = Direction.OUTPUT
-
-vr12 = PWMOut(board.D9, frequency=200000, duty_cycle=65000)
-vr34 = PWMOut(board.D4, frequency=200000, duty_cycle=65000)
-
-
-for i in range(10000):
-    micro_one_step(i/2)
-    # one_step()
-    #time.sleep(0.001)
-
-# x = 0
-# while True:
-#     goto(x % 360)
-#     x += 10#math.pi / 180
-#     time.sleep(1)
-
+if __name__ == '__main__':
+    main()
